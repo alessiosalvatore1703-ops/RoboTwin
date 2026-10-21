@@ -12,6 +12,7 @@ from copy import deepcopy
 import sapien.core as sapien
 import envs._GLOBAL_CONFIGS as CONFIGS
 from envs.utils import transforms
+from envs.utils.base_offset import base_offset_matrix
 from .planner import CuroboPlanner
 import torch.multiprocessing as mp
 
@@ -117,6 +118,13 @@ class Robot:
             right_loader.fix_root_link = True
             self.left_entity = left_loader.load(self.left_urdf_path)
             self.right_entity = right_loader.load(self.right_urdf_path)
+
+        # Base perturbation is folded into the origin poses, not applied to the entities afterwards: the
+        # planners and every world<->robot-frame conversion read these poses, so they stay consistent.
+        offset_matrix = base_offset_matrix(kwargs.get("base_pose_offset"), kwargs)
+        if offset_matrix is not None:
+            self.left_entity_origion_pose = sapien.Pose(offset_matrix @ self.left_entity_origion_pose.to_transformation_matrix())
+            self.right_entity_origion_pose = sapien.Pose(offset_matrix @ self.right_entity_origion_pose.to_transformation_matrix())
 
         self.left_entity.set_root_pose(self.left_entity_origion_pose)
         self.right_entity.set_root_pose(self.right_entity_origion_pose)

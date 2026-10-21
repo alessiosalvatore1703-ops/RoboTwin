@@ -4,6 +4,7 @@ import argparse
 import ast
 import copy
 import importlib
+import json
 import multiprocessing as mp
 import os
 import queue
@@ -30,6 +31,7 @@ for path in (ROBOTWIN_ROOT, ROBOTWIN_ROOT / "scripts", ROBOTWIN_ROOT / "descript
         sys.path.insert(0, path_str)
 
 from envs import CONFIGS_PATH
+from envs.utils.base_offset import pose_xy_yaw, resolve_base_offset, robot_penetrations
 from envs.utils.create_actor import UnStableError
 from generate_episode_instructions import generate_episode_descriptions
 
@@ -333,6 +335,8 @@ def main(usr_args: dict[str, Any]) -> None:
 
 
 def main_batch(usr_args: dict[str, Any]) -> None:
+    if resolve_base_offset(usr_args, 0) is not None or "render_each_action" in usr_args:
+        raise ValueError("base offsets and render_each_action are only supported by the serial eval (eval_batch=false)")
     current_time = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
     task_name = usr_args["task_name"]
     task_config = usr_args.get("task_config", "demo_clean")
@@ -786,6 +790,13 @@ def eval_remote_policy(
 
     expert_check = parse_bool(usr_args.get("expert_check", True))
     frequency = int(usr_args.get("frequency", usr_args.get("ctrl_freq", 30)))
+    # Rendering an observation after every action of a chunk is wasted when the policy only reads the newest
+    # one (X_VLA and Pi_05 overwrite their stored observation on every update_obs). Off skips those renders
+    # and update_obs calls but still refreshes proprioception, which action fallbacks read; default on is
+    # the unchanged harness. The eval video needs the intermediate frames, so the two are exclusive.
+    render_each_action = parse_bool(usr_args.get("render_each_action", True))
+    if not render_each_action and args["eval_video_log"]:
+        raise ValueError("render_each_action=false needs eval_video_log: false in the task config")
     action_type = str(usr_args.get("action_type", "joint"))
 
     task_env.suc = 0
@@ -797,6 +808,7 @@ def eval_remote_policy(
     clear_cache_freq = args["clear_cache_freq"]
     args["eval_mode"] = True
     consecutive_env_errors = 0
+    consecutive_expert_errors = 0
 
     while succ_seed < test_num:
         render_freq = args["render_freq"]
@@ -819,7 +831,15 @@ def eval_remote_policy(
                 now_seed += 1
                 args["render_freq"] = render_freq
                 print(f"error occurs during expert check! seed={now_seed - 1} err={type(e).__name__}: {e}")
+                # A seed-specific failure is skipped, but the same error on every seed means the sim itself is
+                # broken (e.g. the planner failed to build on a full GPU) and would otherwise retry forever.
+                consecutive_expert_errors += 1
+                if consecutive_expert_errors >= 50:
+                    raise RuntimeError(
+                        f"Aborting task: 50 consecutive expert-check errors (last: {type(e).__name__}: {e})."
+                    )
                 continue
+            consecutive_expert_errors = 0
 
         if expert_check and not (task_env.plan_success and task_env.check_success()):
             now_seed += 1
@@ -827,16 +847,35 @@ def eval_remote_policy(
             continue
 
         args["render_freq"] = render_freq
+        # The expert check above ran at the nominal pose on purpose: it picks the seed list, so the list
+        # must not depend on the offset or the per-offset results stop being paired by seed.
+        base_offset = resolve_base_offset(usr_args, now_seed)
+        episode_args = args if base_offset is None else {**args, "base_pose_offset": base_offset}
+        infeasible = None
         try:
-            task_env.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
-        except UnStableError:
-            safe_close_env(task_env)
-            print(f"skip unstable seed={now_seed} (eval setup)")
-            now_seed += 1
-            continue
+            task_env.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **episode_args)
+            if base_offset is not None:
+                penetrations = robot_penetrations(task_env.scene, task_env.robot.left_entity.get_links())
+                if penetrations:
+                    infeasible = "robot penetrates " + ", ".join(f"{l}/{o} {d:.3f}m" for l, o, d in penetrations[:3])
+                    safe_close_env(task_env)
         except Exception as e:
             safe_close_env(task_env)
-            print(f"skip seed={now_seed} setup error: {type(e).__name__}: {e}")
+            if base_offset is None:
+                if isinstance(e, UnStableError):
+                    print(f"skip unstable seed={now_seed} (eval setup)")
+                else:
+                    print(f"skip seed={now_seed} setup error: {type(e).__name__}: {e}")
+                now_seed += 1
+                continue
+            infeasible = f"{type(e).__name__}: {e}"
+        if infeasible is not None:
+            # An offset the sim cannot set up, or that puts the robot inside the scene, is an infeasible
+            # slot, not a skipped seed: skipping would drop it from this offset's seed list.
+            print(f"infeasible base offset {base_offset} at seed={now_seed}: {infeasible}")
+            log_episode(usr_args, task_name, now_seed, base_offset, None, "infeasible")
+            succ_seed += 1
+            task_env.test_num += 1
             now_seed += 1
             continue
 
@@ -909,15 +948,16 @@ def eval_remote_policy(
                     if is_episode_end(task_env) or action_idx + 1 == len(action_chunk):
                         break
 
-                    observation = task_env.get_obs()
-                    xpl_obs = robotwin_obs_to_xpolicylab(
-                        observation,
-                        instruction=task_env.get_instruction(),
-                        env_idx=0,
-                        frequency=frequency,
-                        task_env=task_env,
-                    )
-                    model_client.call(func_name="update_obs", obs=xpl_obs)
+                    observation = task_env.get_obs(render=render_each_action)
+                    if render_each_action:
+                        xpl_obs = robotwin_obs_to_xpolicylab(
+                            observation,
+                            instruction=task_env.get_instruction(),
+                            env_idx=0,
+                            frequency=frequency,
+                            task_env=task_env,
+                        )
+                        model_client.call(func_name="update_obs", obs=xpl_obs)
 
                 if succ:
                     break
@@ -950,6 +990,10 @@ def eval_remote_policy(
             continue
         consecutive_env_errors = 0
 
+        if base_offset is not None:
+            base_pose = pose_xy_yaw(task_env.robot.left_entity_origion_pose.to_transformation_matrix())
+            log_episode(usr_args, task_name, now_seed, base_offset, base_pose, "success" if succ else "failure")
+
         if succ:
             task_env.suc += 1
             print("\033[92mSuccess!\033[0m")
@@ -973,6 +1017,26 @@ def eval_remote_policy(
         now_seed += 1
 
     return now_seed, task_env.suc
+
+
+def log_episode(usr_args, task_name, seed, offset, base_pose, status) -> None:
+    """Append one JSONL row to usr_args["episode_log"] (no-op when unset).
+
+    `base_pose` is the measured world (x, y, yaw) of the robot root, None for infeasible slots;
+    the "id" condition marks the zero-offset baseline, as in Mobi-pi's pose-noise logs.
+    """
+    path = usr_args.get("episode_log")
+    if not path:
+        return
+    record = {"task": task_name, "policy": usr_args["policy_name"], "seed": seed, "status": status,
+              "dx": offset["dx"], "dy": offset["dy"], "dyaw": offset["dyaw"],
+              "condition": "id" if not any(offset.values()) else "noisy"}
+    if base_pose is not None:
+        record.update(zip(("x", "y", "yaw"), base_pose))
+    if "condition_name" in usr_args:
+        record["level"] = usr_args["condition_name"]
+    with open(path, "a", encoding="utf-8") as file:
+        file.write(json.dumps(record) + "\n")
 
 
 def build_instruction(args: dict[str, Any], episode_info: dict[str, Any], instruction_type: str | None, test_num: int, seed: int) -> str:

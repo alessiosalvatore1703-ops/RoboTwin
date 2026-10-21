@@ -1,0 +1,27 @@
+# Base-pose noise experiment (Mobi-pi pose-noise protocol on RoboTwin), read by scripts/run_base_offset_sweep.py.
+# Every rollout draws an independent uniform (dx, dy) in +/-xy_m and dyaw in +/-yaw_deg around the nominal base
+# pose; the scene stays fixed, the base and its head/wrist cameras move. The offset is a function of
+# (noise_seed, episode seed) only, so all levels and all policies see the same underlying draws (paired), and a
+# larger level scales the same draw. Rollouts whose pose penetrates the scene are logged `infeasible` and are
+# excluded from the success-rate denominator by scripts/summarize_base_offset.py.
+policy_name: X_VLA
+ckpt_name: RoboTwin-cotrain-aloha_agilex-ee-0
+action_type: ee
+env_cfg_type: aloha_agilex
+port: 6000
+server_cmd: ".venv_xvla/bin/python XPolicyLab/setup_policy_server.py --config_path XPolicyLab/policy/X_VLA/deploy.yml --overrides port={port} ckpt_name=RoboTwin-cotrain-aloha_agilex-ee-0 env_cfg_type=aloha_agilex action_type=ee action_dim=14"
+
+task_names: [lift_pot, open_laptop, stack_blocks_two]
+task_config: demo_clean_novideo   # eval_video_log off, front camera not rendered (layouts unchanged)
+render_each_action: false         # X_VLA and Pi_05 only read the newest observation
+test_num: 30                      # rollouts per task and level
+seed: 0                           # episode seeds start at 100000 * (1 + seed)
+noise_seed: 0
+
+levels:
+  - {name: nominal,          xy_m: 0.0,  yaw_deg: 0.0}
+  - {name: n10cm_7p5deg,     xy_m: 0.10, yaw_deg: 7.5}
+  - {name: n15cm_22p5deg,    xy_m: 0.15, yaw_deg: 22.5}
+  - {name: n20cm_30deg,      xy_m: 0.20, yaw_deg: 30.0}
+
+out_dir: eval_result/base_offset/pose_noise_v1

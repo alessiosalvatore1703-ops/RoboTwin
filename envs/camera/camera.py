@@ -11,6 +11,7 @@ import yaml
 import trimesh
 import math
 from .._GLOBAL_CONFIGS import CONFIGS_PATH
+from ..utils.base_offset import base_offset_matrix
 import os
 from sapien.sensor import StereoDepthSensor, StereoDepthSensorConfig
 
@@ -50,6 +51,9 @@ class Camera:
         self.pcd_crop_bbox[0][2] += bias
         self.table_z_bias = bias
         self.random_head_camera_dis = random_head_camera_dis
+        # Static cameras are defined in the robot's nominal world placement, not mounted on a link, so a
+        # base perturbation has to move them explicitly or the policy would see an unmoved viewpoint.
+        self.base_offset_matrix = base_offset_matrix(kwags.get("base_pose_offset"), kwags)
 
         self.static_camera_config = []
         self.head_camera_type = kwags["camera"].get("head_camera_type", "D435")
@@ -57,6 +61,9 @@ class Camera:
 
         self.collect_head_camera = kwags["camera"].get("collect_head_camera", True)
         self.collect_wrist_camera = kwags["camera"].get("collect_wrist_camera", True)
+        # Default on, so existing configs render every static camera as before. Eval of policies that
+        # never read the front camera can turn it off: it is rendered and read back on every observation.
+        self.collect_front_camera = kwags["camera"].get("collect_front_camera", True)
 
         # embodiment = kwags.get('embodiment')
         # embodiment_config_path = os.path.join(CONFIGS_PATH, '_embodiment_config.yml')
@@ -104,6 +111,8 @@ class Camera:
             mat44 = np.eye(4)
             mat44[:3, :3] = np.stack([cam_forward, cam_left, up], axis=1)
             mat44[:3, 3] = cam_pos
+            if self.base_offset_matrix is not None:
+                mat44 = self.base_offset_matrix @ mat44
 
             # ========================= sensor camera =========================
             # sensor_config = StereoDepthSensorConfig()
@@ -208,6 +217,11 @@ class Camera:
                     #     sensor_mount_actor,
                     #     sapien.Pose(mat44)
                     # )
+            elif camera_info["name"] == "front_camera" and not self.collect_front_camera:
+                # create_camera draws from the numpy RNG and the scene objects are sampled after the cameras,
+                # so skipping those draws would give every seed a different layout than the default config.
+                np.random.randn(3)
+                np.random.uniform(low=0, high=0)
             else:
                 # camera, sensor_camera, camera_config = create_camera(camera_info)
                 camera, camera_config = create_camera(camera_info)

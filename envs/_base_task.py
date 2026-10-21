@@ -435,9 +435,11 @@ class Base_Task(gym.Env):
 
     # =========================================================== Basic APIs ===========================================================
 
-    def get_obs(self):
+    def get_obs(self, render=True):
+        """Observation dict; render=False skips every camera-derived field and keeps proprioception only."""
         self._update_render()
-        self.cameras.update_picture()
+        if render:
+            self.cameras.update_picture()
         pkl_dic = {
             "observation": {},
             "pointcloud": [],
@@ -447,26 +449,26 @@ class Base_Task(gym.Env):
 
         pkl_dic["observation"] = self.cameras.get_config()
         # rgb
-        if self.data_type.get("rgb", False):
+        if render and self.data_type.get("rgb", False):
             rgb = self.cameras.get_rgb()
             for camera_name in rgb.keys():
                 pkl_dic["observation"][camera_name].update(rgb[camera_name])
 
-        if self.data_type.get("third_view", False):
+        if render and self.data_type.get("third_view", False):
             third_view_rgb = self.cameras.get_observer_rgb()
             pkl_dic["third_view_rgb"] = third_view_rgb
         # mesh_segmentation
-        if self.data_type.get("mesh_segmentation", False):
+        if render and self.data_type.get("mesh_segmentation", False):
             mesh_segmentation = self.cameras.get_segmentation(level="mesh")
             for camera_name in mesh_segmentation.keys():
                 pkl_dic["observation"][camera_name].update(mesh_segmentation[camera_name])
         # actor_segmentation
-        if self.data_type.get("actor_segmentation", False):
+        if render and self.data_type.get("actor_segmentation", False):
             actor_segmentation = self.cameras.get_segmentation(level="actor")
             for camera_name in actor_segmentation.keys():
                 pkl_dic["observation"][camera_name].update(actor_segmentation[camera_name])
         # depth
-        if self.data_type.get("depth", False):
+        if render and self.data_type.get("depth", False):
             depth = self.cameras.get_depth()
             for camera_name in depth.keys():
                 pkl_dic["observation"][camera_name].update(depth[camera_name])
@@ -494,7 +496,7 @@ class Base_Task(gym.Env):
             pkl_dic["joint_action"]["right_gripper"] = right_jointstate[-1]
             pkl_dic["joint_action"]["vector"] = np.array(left_jointstate + right_jointstate)
         # pointcloud
-        if self.data_type.get("pointcloud", False):
+        if render and self.data_type.get("pointcloud", False):
             pkl_dic["pointcloud"] = self.cameras.get_pcd(self.data_type.get("conbine", False))
 
         self.now_obs = deepcopy(pkl_dic)

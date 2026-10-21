@@ -30,3 +30,8 @@ envs/curobo/*
 
 /*.json*
 /*.txt
+
+# Local environments and toolchain
+.venv/
+.venv_*/
+.cuda/
