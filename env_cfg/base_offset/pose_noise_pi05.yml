@@ -1,0 +1,26 @@
+# Base-pose noise experiment for Pi_05 on a finer noise range than pose_noise.yml (same tasks, seeds and noise_seed,
+# so each episode's offset is the same underlying draw scaled to the level). Results land in <out_dir>/Pi_05/<task>/<level>.jsonl.
+policy_name: Pi_05
+ckpt_name: RoboTwin-lerobot_v30-aloha_agilex-joint-0
+action_type: joint
+env_cfg_type: aloha_agilex
+port: 6001
+# checkpoint_num / repo_id: deploy.yml defaults (59999 / arx_x5_sim) do not match the downloaded checkpoint.
+# The JAX memory cap leaves GPU room for the simulator and planner.
+server_cmd: "env XLA_PYTHON_CLIENT_MEM_FRACTION=0.5 XPolicyLab/policy/Pi_05/openpi/.venv/bin/python XPolicyLab/setup_policy_server.py --config_path XPolicyLab/policy/Pi_05/deploy.yml --overrides port={port} host=localhost bench_name=RoboTwin policy_name=Pi_05 ckpt_name=RoboTwin-lerobot_v30-aloha_agilex-joint-0 env_cfg_type=aloha_agilex action_type=joint action_dim=14 checkpoint_num=29999 repo_id=RoboTwin_lerobot_v30"
+
+task_names: [lift_pot, open_laptop, stack_blocks_two]
+task_config: demo_clean_novideo   # eval_video_log off, front camera not rendered (layouts unchanged)
+render_each_action: false         # X_VLA and Pi_05 only read the newest observation
+test_num: 30                      # rollouts per task and level
+seed: 0                           # episode seeds start at 100000 * (1 + seed)
+noise_seed: 0
+
+levels:
+  - {name: nominal,          xy_m: 0.0,   yaw_deg: 0.0}
+  - {name: n2p5cm_2deg,      xy_m: 0.025, yaw_deg: 2.0}
+  - {name: n5cm_4p5deg,      xy_m: 0.05,  yaw_deg: 4.5}
+  - {name: n10cm_9deg,       xy_m: 0.10,  yaw_deg: 9.0}
+  - {name: n15cm_13deg,      xy_m: 0.15,  yaw_deg: 13.0}
+
+out_dir: eval_result/base_offset/pose_noise_fine_v1

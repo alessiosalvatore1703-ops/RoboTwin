@@ -107,12 +107,20 @@ def run_task(args, task, groups):
                 log = run_dir / f"{name}.jsonl"
                 rows = len(log.read_text().splitlines()) if log.exists() else 0
                 if rows < args.test_num:
-                    log.unlink(missing_ok=True)
-                    print(f"== {task}/{name}", flush=True)
+                    st_seed, test_num = 100000 * (1 + args.seed), args.test_num
+                    if args.resume and rows:
+                        # Seeds advance deterministically, so continuing after the last logged seed gives the
+                        # episodes the interrupted run would have produced next; rows are appended to the log.
+                        st_seed = json.loads(log.read_text().splitlines()[-1])["seed"] + 1
+                        test_num = args.test_num - rows
+                        print(f"== {task}/{name} (resume: {rows} rows, from seed {st_seed})", flush=True)
+                    else:
+                        log.unlink(missing_ok=True)
+                        print(f"== {task}/{name}", flush=True)
                     eval_module.eval_remote_policy(
-                        task, task_env, task_args, model_client, 100000 * (1 + args.seed),
+                        task, task_env, task_args, model_client, st_seed,
                         usr_args={**base_usr_args, **knobs, "episode_log": str(log), "condition_name": name},
-                        test_num=args.test_num, instruction_type=instruction_type)
+                        test_num=test_num, instruction_type=instruction_type)
                 else:
                     print(f"skip {task}/{name}: {rows} rows", flush=True)
                 successes = sum(json.loads(line)["status"] == "success" for line in log.read_text().splitlines())
@@ -151,6 +159,8 @@ def main():
     parser.add_argument("--joint_yaw_deg", type=float, default=25)
     parser.add_argument("--noise_seed", type=int, default=0)
     parser.add_argument("--early_stop", action="store_true")
+    parser.add_argument("--resume", action="store_true",
+                        help="continue an incomplete condition after its last logged seed instead of rerunning it")
     parser.add_argument("--out_dir", type=Path, default=ROBOTWIN_ROOT / "eval_result" / "base_offset")
     parser.add_argument("--dry_run", action="store_true")
     unknown = set(config) - {action.dest for action in parser._actions}
